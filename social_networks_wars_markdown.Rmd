@@ -1,0 +1,707 @@
+---
+title: "Social Network Analysis - Battles of the 19th and 20th Century"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r echo=FALSE, warning=FALSE}
+#### 1. Libraries ####
+
+library(ggraph)
+library(network)
+library(igraph)
+library(visNetwork)
+library(networkD3)
+library(tidygraph)
+library(tidyr)
+library(tidyverse)
+library(dplyr)
+library(gganimate)
+library(data.table)
+library(ggmap)
+library(rgeos)
+library(rworldmap)
+library(magrittr)
+library(assertthat)
+library(geosphere)
+```
+
+```{r echo=FALSE}
+
+#### 2. Reading and merging files ####
+
+#The whole dataset is composed of multiple files. We are going to grab the three which include the most
+#relevant information for us and merge them by the battle id
+
+#### 2.1 Reading the files ####
+battles<-read.csv('/Users/lina/Documents/Masters/Term 2/Python/MBD_term2_group_projects/Social Networks/merged_battles.csv')
+
+```
+
+```{r echo=FALSE}
+#### 3. Data Cleaning and Filtering ####
+
+#### 3.1.1 Input for missing values for "wina" according to documentation ####
+
+battles$wina[is.na(battles$wina)] <- -1
+
+#### 3.1.2 Renaming some of the countries to their modern version ####
+
+#As we are dealing with battles that happened in the 18th and 19th century,
+#many of those territories changed named overtime. (Example, USSR to Russia).
+
+#After some research on those actors which did not appear as a modern country, we renamed their values
+#on the data set to be able to perform a cleaner by-country analysis.
+
+battles$attacker[battles$attacker== "Zulu"] <- "South African Republic"
+battles$defender[battles$defender== "Zulu"] <- "South African Republic"
+
+battles$attacker[battles$attacker== "USSR"] <- "Russia"
+battles$defender[battles$defender== "USSR"] <- "Russia"
+
+levels(battles$attacker) <- c(levels(battles$attacker), "Sudan")
+battles$attacker[battles$attacker== "Mahdists"] <- "Sudan"
+
+battles$attacker[battles$attacker== "Confederacy"] <- "USA"
+battles$defender[battles$defender== "Confederacy"] <- "USA"
+
+battles$attacker[battles$attacker== "Texas"] <- "USA"
+battles$defender[battles$defender== "Texas"] <- "USA"
+
+levels(battles$attacker) <- c(levels(battles$attacker), "Colombia")
+levels(battles$attacker) <- c(levels(battles$attacker), "Venezuela")
+levels(battles$attacker) <- c(levels(battles$attacker), "Ecuador")
+levels(battles$attacker) <- c(levels(battles$attacker), "Peru")
+levels(battles$defender) <- c(levels(battles$defender), "Colombia")
+levels(battles$defender) <- c(levels(battles$defender), "Venezuela")
+levels(battles$defender) <- c(levels(battles$defender), "Ecuador")
+levels(battles$defender) <- c(levels(battles$defender), "Peru")
+
+battles$attacker[battles$isqno== "150"] <- "Colombia"
+battles$attacker[battles$isqno== "151"] <- "Venezuela"
+battles$attacker[battles$isqno== "152"] <- "Ecuador"
+battles$defender[battles$isqno== "153"] <- "Ecuador"
+battles$attacker[battles$isqno== "154"] <- "Peru"
+battles$defender[battles$isqno== "155"] <- "Peru"
+
+battles$attacker[battles$attacker== "Prussia"] <- "Germany"
+battles$defender[battles$defender== "Prussia"] <- "Germany"
+battles$attacker[battles$attacker== "Bavaria"] <- "Germany"
+battles$defender[battles$defender== "Bavaria"] <- "Germany"
+
+levels(battles$attacker) <- c(levels(battles$attacker), "Turkey")
+levels(battles$defender) <- c(levels(battles$defender), "Turkey")
+battles$attacker[battles$attacker== "Ottoman Empire"] <- "Turkey"
+battles$defender[battles$defender== "Ottoman Empire"] <- "Turkey"
+
+levels(battles$attacker) <- c(levels(battles$attacker), "Vietnam")
+levels(battles$defender) <- c(levels(battles$defender), "Vietnam")
+battles$attacker[battles$attacker== "North Vietnam"] <- "Vietnam"
+battles$defender[battles$defender== "South Vietnam"] <- "Vietnam"
+
+battles$attacker[battles$attacker== "Spanish Republic"] <- "Spain"
+battles$defender[battles$defender== "Spanish Republic"] <- "Spain"
+
+##### 3.1.3  Creating time variables ####
+
+battles$datetime<-as.Date(battles$datetime)
+battles$year<-substring(battles$datetime,1,4)
+battles$decade<-substring(battles$datetime,3,3)
+battles$year_decade<-paste(substring(battles$year,1,2),battles$decade, sep="")
+
+#### 3.1.4 Filtering for 18th and 19th Century ####
+
+battles_filtered<-battles %>%
+  dplyr::filter(datetime > "1800-01-01")
+
+battles<-battles_filtered
+```
+
+
+```{r echo=FALSE, warning=FALSE}
+#### 4. Creating nodes and edges ####
+
+#### 4.1 Nodes - Countries ####
+
+# We want a list with the different attackers and one with the different defenders. By getting the unique
+#values of each and then joining them, we will have the nodes.
+
+attackers <- battles %>%
+  distinct(attacker)  %>%
+  rename(label = attacker)
+
+defenders <- battles %>%
+  distinct(defender) %>%
+  rename(label = defender)
+
+#Now we will join them to have a list of all of my nodes.
+
+nodes <- full_join(attackers, defenders, by = "label")
+
+#And we will create an ID for all of them
+nodes <- nodes %>% 
+  rowid_to_column("id")
+
+#### 4.2 Edges - Battles ####
+
+#Our edges will be ATTACKS! every time one country attacked another, will we have an edge. 
+#This adds also a weight attribute to our graph if a country attacked another more than once.
+#and an additional layer: direction.
+
+#First we will create the attacks, grouping the distinct attackers, defenders and decade of the battle
+
+attacks<- battles  %>%  
+  group_by(attacker, defender,year_decade,wina,war_short) %>%
+  summarise(weight = n()) %>% 
+  ungroup()
+
+#We am creating my edges along with its 'from' direction (the one who attacked)
+edges <- attacks %>% 
+  left_join(nodes, by = c("attacker" = "label")) %>% 
+  rename(from = id)
+
+#and now adding a second dimension, the 'to' which is the actor that defended the attack
+
+edges <- edges %>% 
+  left_join(nodes, by = c("defender" = "label")) %>% 
+  rename(to = id)
+
+#Printing the density of our plot
+print(paste0('Density: ', round(nrow(edges)/(nrow(nodes) *nrow(nodes)),2)))
+
+#as we have the label in the for and to columns, we can get rid of the names
+
+edges <- select(edges, from, to, weight, year_decade, wina,war_short)
+```
+
+After finishing with our data manipulation and cleaning, we remain with 161 edges and 30 nodes.
+With these two numbers we can calculate the density of our network (E/N²).
+The density for out network is 0.1788
+
+```{r echo=FALSE}
+#### 5. Plotting ####
+
+#### 5.1 Circle Layout ####
+
+#First we will create an igraph object and choose a circle layour for this object 
+
+battles_igraph <- graph_from_data_frame(d = edges, vertices = nodes, directed = FALSE)
+l <- layout_in_circle(battles_igraph)
+
+plot(battles_igraph, layout=l,#lays out on a circle
+     #edge.arrow.size = 0.1,#how thick is the arrow
+     vertex.size=12, #how big are the circles
+     vertex.label = " ",
+    #vertex.label=V(battles_igraph)$label, #label?
+     vertex.color= "#b2dab5", # color of edge
+     vertex.frame.color = "white" ,
+     vertex.shape	="circle", #shape of edge
+     edge.curved = 0,
+     arrow.mode	=0,
+     vertex.label.family="Helvetica",
+     vertex.label.cex = 1,
+     vertex.label.degree = 90,
+     vertex.label.color = "black",
+     edge.color="gray70") #color of my edges) 
+
+```
+
+The network, graphically, looks like a Small World. We will keep this in mind later when we do the simulations.
+
+A portion of the graph clearly shows that some nodes (countries), were more active than others, and
+we even have a few self loops.
+
+```{r echo=FALSE}
+ 
+#### 5.1.2 Circle Layout - Directed  ####
+
+battles_igraph <- graph_from_data_frame(d = edges, vertices = nodes, directed = TRUE)
+l <- layout_in_circle(battles_igraph)
+
+plot(battles_igraph, layout=l,#lays out on a circle
+     edge.arrow.size = 0.3,#how thick is the arrow
+     vertex.size=12, #how big are the circles
+     vertex.label = " ",
+     #vertex.label=V(battles_igraph)$label, #label?
+     vertex.color= "#b2dab5", # color of edge
+     vertex.frame.color = "white" ,
+     vertex.shape	="circle", #shape of edge
+     edge.curved = 0,
+     arrow.mode	=0,
+     vertex.label.family="Helvetica",
+     vertex.label.cex = 1,
+     vertex.label.degree = 90,
+     vertex.label.color = "black",
+     edge.color="gray70") #color of my edges) 
+
+```
+After adding direction we can see another element in our graph : the arrows point from the 
+country which attacked to the country attacked. Graphically, there does not seem to be
+a clear country which was highly attacked but didn't attack back or viceversa.
+We will look further into the in and out degrees of the network in the numerical analysis.
+
+```{r echo=FALSE}
+#### 5.1.3 Circle Layout - Directed, Degree ####
+
+deg <- degree(battles_igraph, mode="total")
+plot(battles_igraph, layout=l,#lays out on a circle
+     edge.arrow.size = 0.3,#how thick is the arrow
+     vertex.size=degree, #how big are the circles
+     vertex.label = " ",
+     vertex.label=V(battles_igraph)$label, #label?
+     vertex.color= "#b2dab5", # color of edge
+     vertex.frame.color = "white" ,
+     vertex.shape	="circle", #shape of edge
+     edge.curved = 0,
+     arrow.mode	=0,
+     vertex.label.family="Helvetica",
+     vertex.label.cex = 1,
+     vertex.label.degree = 90,
+     vertex.label.color = "black",
+     edge.color="gray70")
+```
+Adding one more element to the graph, the representation of the degree for each node, some countries clearly are more important than others when it comes to degree centrality.
+
+```{r echo=FALSE}
+#### 5.1.4 Circle Layout - Directed, Degree ####
+
+deg <- degree(battles_igraph, mode="total")
+col.tr <- grDevices::adjustcolor("#b2dab5", alpha=0.5)
+
+plot(battles_igraph, layout=l,#lays out on a circle
+     edge.arrow.size = 0.2,#how thick is the arrow
+     vertex.size=deg, #how big are the circles
+     #vertex.label = " ",
+     vertex.label=V(battles_igraph)$label, #label?
+     vertex.color = col.tr, # color of edge
+     vertex.frame.color = "white" ,
+     vertex.shape	="circle", #shape of edge
+     edge.curved = 0,
+     arrow.mode	=0,
+     vertex.label.family="Helvetica",
+     vertex.label.cex = 0.75,
+     vertex.label.degree = 90,
+     vertex.label.color = "black",
+     edge.color="gray70")
+
+```
+
+Now we have the labels for every country .
+```{r echo=FALSE}
+
+#### 5.2 Linear Network  #### 
+
+#### 5.2.1 Linear Network - Factored by winner of the battle #### 
+
+edges$wina<-factor(edges$wina, levels=c(-1, 0, 1), labels=c("Attacker Lost", "Draw", "Attacker Won"))
+battles_igraph <- graph_from_data_frame(d = edges, vertices = nodes, directed = TRUE)
+
+ggraph(battles_igraph, layout = "linear") + 
+  geom_edge_arc(aes(colour = factor(wina)), alpha = 0.4, arrow = arrow(length = unit(5, 'mm'))) + 
+  scale_edge_width(range = c(0.2, 3)) +
+  geom_node_text(aes(label = label) , angle=45) +
+  labs(edge_width = "Battles") +
+  theme_graph()
+```
+
+Factoring the color of the edges by the winner of the battle we have on very clear insight:
+attackers had an advantage and were much more likely to win the battle againts the countries they attacked (there is a lot more green than red!). The detail of the arrows shows two countries which were not as good as attacking because of the red color of arrows pointing from them : France and Israel.Additionally, draws were not common at all. 
+
+However with the graph it is not that easy to know which are the clears winners and losers of the wars, some manipulation of the edges should clear this out.
+
+```{r echo=FALSE}
+
+#### 5.2.1 -Extra: Deep Analysis #### 
+
+attacker_won= edges %>%
+  filter(wina=="Attacker Won") %>%
+  group_by(from) %>%
+  summarize(AttackerAndWon = sum(as.numeric(weight)))
+  
+deffender_won = edges %>%
+  filter(wina=="Attacker Lost") %>%
+  group_by(to) %>%
+  summarize(DeffenderAndWon = sum(as.numeric(weight))) 
+
+attacker_lost= edges %>%
+  filter(wina=="Attacker Lost") %>%
+  group_by(from) %>%
+  summarize(AttackerAndLost = sum(as.numeric(weight)))
+
+deffender_lost= edges %>%
+  filter(wina=="Attacker Won") %>%
+  group_by(to) %>%
+  summarize(DeffenderAndLost = sum(as.numeric(weight)))
+
+nodes_attacks <- merge(nodes, attacker_won, by.x ="id",by.y="from", all.x = TRUE)
+nodes_attacks <- merge(nodes_attacks, attacker_lost, by.x ="id",by.y="from", all.x = TRUE)
+nodes_attacks <- merge(nodes_attacks, deffender_won, by.x ="id",by.y="to", all.x = TRUE)
+nodes_attacks <- merge(nodes_attacks, deffender_lost, by.x ="id",by.y="to", all.x = TRUE)
+
+nodes_attacks[is.na(nodes_attacks)] = 0
+
+nodes_attacks$total_wins = nodes_attacks$AttackerAndWon +nodes_attacks$DeffenderAndWon
+nodes_attacks$total_lost = nodes_attacks$AttackerAndLost + nodes_attacks$DeffenderAndLost
+nodes_attacks$win_lost = nodes_attacks$total_wins/nodes_attacks$total_lost
+
+nodes_attacks<-nodes_attacks[-1]
+head(nodes_attacks,5)
+```
+Who was the biggest winner of the wars? USA ! the proportion of battles won and lost is clearly on its favor. The geographical position helped, as we saw earlier that defenders do not have a good chance of winning and planning an attack to an isolated territory probably was not easy. The biggest loser? Germany. Out of the top players of the battles, it has the lowest proportion of won battles. Looking at the table Germany was attacked the most out of all the countries, which is a disadvatage, but when it came to their attacks they do not come in good shape either. France, similarly, was not a good attacker as it is the only country with the same proportion of wins and loses as an attacker, as opposed to all of the countries which show an attacker advantage.
+
+```{r echo=FALSE}
+
+#### 5.2.2 Linear Network - Factored by battle ### 
+
+battles_igraph <- graph_from_data_frame(d = edges, vertices = nodes, directed = TRUE)
+
+ggraph(battles_igraph, layout = "linear") +
+  geom_edge_arc(aes( colour = factor(war_short)), alpha = 0.8,strength = 3) + 
+  scale_edge_width(range = c(0.2, 4)) +
+  geom_node_text(aes(label = label) , angle=45) +
+  theme_graph()
+```
+
+Even though there are a lot of wars color coded in this graph, there is clear trend as well:
+most of the battles of the 19th and 20th century occured during the World Wars, the Korean War and the Arab Israely War.
+
+```{r echo=FALSE}
+
+#### 5.3.1 Network plotted on a map  - Creating New edges and nodes with lon and lat### 
+
+
+#Disclamer: this is an adapted version to create the geographical nodes ,
+#specifically for this map. 
+#https://www.r-bloggers.com/three-ways-of-visualizing-a-graph-on-a-map/
+
+# get world map
+wmap <- getMap(resolution="low")
+# get centroids
+coords <- gCentroid(wmap, byid=TRUE)
+
+# get a data.frame with centroids
+coords <- as.data.frame(coords)
+coords_df <- cbind(Country = rownames(coords), coords)
+rownames(coords_df) <- 1:nrow(coords_df)
+
+#Merge with the coordinates of my nodes
+merged_df<-merge(nodes,coords_df, by.y="Country", by.x="label")
+#manually add coordinates of 5 missing countries(1,4,12, 20,23)
+
+merged_df<-rbind(merged_df,c("Great Britain",5,-2.8656336,54.1238716))
+merged_df<-rbind(merged_df,c("Serbia",18,20.78958,44.22150))
+merged_df<-rbind(merged_df,c("USA",6,-112.4616706,45.6795520))
+merged_df<-rbind(merged_df,c("South African Republic",14,25.08388,-29.000338))
+merged_df<-rbind(merged_df,c("Palestine",30,35.00445,35.2332))
+
+#join with my nodes
+nodes_geo<-merge(nodes, merged_df, by="label")
+
+#rename columns
+colnames(nodes_geo)[3]<-"id"
+colnames(nodes_geo)[4]<-"lat"
+colnames(nodes_geo)[5]<-"lon"
+nodes_geo<-nodes_geo[,3:5]
+
+#filter self loops
+edges_geo<-edges %>% 
+  dplyr::filter(edges$from != edges$to )
+
+#new graph object
+
+g <- graph_from_data_frame(edges_geo, directed =TRUE, vertices = nodes_geo)
+
+nodes_geo$id<-as.integer(nodes_geo$id)
+
+edges_for_plot <- edges_geo %>%
+  inner_join(nodes_geo %>% select(id, lon, lat), by = c('from' = 'id')) %>%
+  rename(x = lon, y = lat) %>%
+  inner_join(nodes_geo %>% select(id, lon, lat), by = c('to' = 'id')) %>%
+  rename(xend = lon, yend = lat)
+
+#assert_that(nrow(edges_for_plot) == nrow(edges_geo))
+nodes_geo$weight = degree(g)
+
+```
+
+
+```{r echo=FALSE}
+
+#### 5.3.2 Network plotted on a map  - Actual Code for the map t### 
+
+#Disclaimer: this is an adapted version from the following code to be able
+#to fix the problem of weird edges from nodes with long distances
+#https://www.data-to-viz.com/story/MapConnection.html
+
+
+all_pairs=cbind(t(combn(nodes_geo$lon, 2)), t(combn(nodes_geo$lat, 2))) %>% as.data.frame()
+colnames(all_pairs)=c("long1","long2","lat1","lat2")
+
+par(mar=c(0,0,0,0))
+
+maps::map('world',col="#f2f2f2", fill=FALSE, bg="black", lwd=0.2,mar=rep(0,4))
+
+points(x=nodes_geo$lat, y=nodes_geo$lon, pch=20, col="#5d6066")
+
+edge.col <- "#b2dab5"
+
+for(i in 1:nrow(edges_geo))  {
+  
+
+  node1 <- nodes_geo[nodes_geo$id == edges_geo[i,]$from,]
+  node2 <- nodes_geo[nodes_geo$id == edges_geo[i,]$to,]
+  
+  inter <- gcIntermediate( c(as.numeric(node1[1,]$lat), as.numeric(node1[1,]$lon)), 
+                           c(as.numeric(node2[1,]$lat), as.numeric(node2[1,]$lon)), addStartEnd=TRUE)    
+  
+  edge.ind <- round(1*edges_geo[i,]$weight / max(edges_geo$weight))
+  
+  inter=data.frame(inter)
+
+  lines(subset(inter, lon>=0),col=edge.col, lwd=0.2)
+  lines(subset(inter, lon<0),col=edge.col, lwd=0.2)}
+
+```
+
+Geographycally, we can see that even though some countries are "outliers" geographically,
+from previous analysis they have shown as some of the top actors , for example the USA, Korea and Japan. At least on this data set the whole continent of Australia and most of South East Asia, with the exception of the war between North and South Vietnam, look very peaceful. 
+
+
+
+```{r echo=FALSE}
+#### 5.2.4 Circular Network with movement ####
+
+
+#For the interactive version click here!
+#https://rpubs.com/linacarrilloie/583059
+
+edges1 <- mutate(edges, width = weight/5 + 1)
+
+visNetwork(nodes, edges, width = "100%") %>% 
+  visNodes(color="#B8E4DE") %>% 
+  visIgraphLayout(layout = "layout_nicely") %>% 
+  visEdges(arrows = "middle",smooth=TRUE) %>%
+  visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE)
+
+```
+
+The value that the interactive network adds its how it lets the users deep dive into the countries they find more interesting and also highlight the nearest edges(zoom in for the best detail). Additionally, instead of having a thicker edge with the number of the battles there is an actual edge per every battle for users that want to know this detail. From this visual analysis, Great Britain, Germany , France and USA are highly connected  between each other but interestingly enough, the Arab Israeli conflict has only one edge that connects them with the rest of the conflicts: Egypt. Will these insights appear as well in the numerical analysis?
+
+```{r echo=FALSE, warning=FALSE}
+##### 6. Graph Analysis #####
+
+# calculate all the centrality measures
+names <- nodes$label
+in_degree <- degree(battles_igraph, mode = 'in')
+out_degree <- degree(battles_igraph, mode = 'out')
+total_degree <- degree(battles_igraph, mode = 'total')
+betweenness <- betweenness(battles_igraph)
+eigenvector <- eigen_centrality(battles_igraph, 
+                                directed = TRUE)$vector
+pagerank <- page_rank(battles_igraph, directed = TRUE)$vector
+
+# bind values into dataframe
+centralities <- data.frame(name = nodes$label,
+                           in_degree = in_degree,
+                           out_degree = out_degree,
+                           total_degree = total_degree,
+                           betweenness = betweenness,
+                           eigenvector = eigenvector,
+                           pagerank = pagerank
+                           )
+
+
+```
+
+We can see that for the in-degree, Germany has by far the highest due to its involvement in both world wars, where it had few allies and therefore received a lot of attacks.
+
+Furthermore, most of these countries are from Europe, due to the large number of battles in the two world wars as well as a long list on conflicts happening in the centuries before. At number 5 is the United States, who also received a lot of attacks in both world wars, and also fought in the Korean and Mexican war, as well as battles in the civil war. For the same reason, Japan is also in the top 10.
+
+The only country not involved in the two world wars is Israel, as it was created after the end of the second world war. Its high in-degree can be explained by the large number of attacks from all its neighboring states after the British ended their protection of Isreal and in the years following that up to date. In many of these wars, Egypt was involved, and it also appears in the top 10.
+
+```{r echo=FALSE}
+#### 6.1 In - Degree Centralities ####
+
+# show countries with top 10 in-degree centralities
+head(centralities[order(-centralities$in_degree),], 10)
+```
+
+The list of the ten countries with the highest out-degree is very similar to the list of countries with the highest in-degree. This shows that countries who attack other countries a lot also receive a large number of attacks in return. We can also see that these countries have attacked more often than they received attacks, because the out-degree is higher than the in-degree for most of them. 
+
+```{r echo=FALSE}
+
+#### 6.2 Out - Degree Centralities ####
+
+head(centralities[order(-centralities$out_degree),], 10)
+```
+
+The same countries we have seen above also have the highest total degree centrality. This is because as established before, most countries have similar in- and out-degree. Countries that attack often also get attacked often, resulting in a high total degree centrality.
+
+```{r echo=FALSE}
+#### 6.3 Total Degree Centrality ####
+
+head(centralities[order(-centralities$total_degree),], 10)
+
+```
+
+Betweenness as a measure of centrality is not very intuitive for this type of data, because the concept of a path in a social network doesn't really exist for wars.
+
+However, here we can see that the top three countries are Great Britain, Russia and USA. They have the highest betweenness because they fight wars all over the world, in the Americas, in Europe, in the Middle East and in Asia. Germany on the other hand, even though it had the most battles, it had nearly all of them in central Europe with very connected parties. Therefore, betweenness can be used as a measure of how many unrelated conflicts a country is involved in.
+
+```{r echo=FALSE}
+#### 6.4 Betweeness Centraility ####
+
+head(centralities[order(-centralities$betweenness),], 10)
+```
+
+The countries with high eigenvector centralities are those involved in the two world wars: Germany, USA, France, Japan, Great Britain and Russia. Furthermore, these countries have a long history of wars with each other far before the world wars (except Japan).
+
+Furthermore, we also see two parties with very low degree centralities in this list, Mexico and North Korea. They have high eigenvector centralities because they fought battles with the USA, one of the most active countries in war. 
+
+```{r echo=FALSE}
+
+##### 6.5 Eigen Vector Centrality #####
+
+head(centralities[order(-centralities$eigenvector),], 10)
+```
+
+Page rank vs Eigenvector centrality - There are 2 most important prestige centrality scores - Page Rank and Eigenvector. Intuition says that both would yield similar measures as both measure the connections with important components, influence the prestige centrality scores. But when we tried evaluating the Eigenvector and PageRank centralities, we could see that Eigenvector centrality is highest for Germany and USA whereas pagerank centrality is highest for Spain. This is because Page Rank looks only for the incoming links (the concept of pagerank is to see how many important pages point to the page). This is the reason why even though page rank is a prestige centrality, it must be used judiciously basing on analysis being done.
+
+```{r echo=FALSE}
+##### 6.6 Page Rank 
+
+head(centralities[order(-centralities$pagerank),], 10)
+```
+
+
+```{r echo=FALSE}
+##### 7. Simulation #####
+
+
+##### 7.1 Setup ####
+
+# set parameters for the simulation
+dim = 1
+size = vcount(battles_igraph)
+nei = ecount(battles_igraph) / vcount(battles_igraph)
+p = 0.1
+# create empty vectors to store information from each iteration of the simulation
+global_transitivity <- c()
+max_total_degree <- c()
+max_in_degree <- c()
+max_out_degree <- c()
+max_betweenness <- c()
+max_closeness <- c()
+max_pagerank <- c()
+
+# run the simulation 1000 times
+for (i in 1:1000){
+  
+  # simulate one network
+  battles_simulated <- sample_smallworld(dim = dim,
+                                       size = size,
+                                       nei = nei,
+                                       p = p,
+                                       loops = TRUE,
+                                       multiple = FALSE)
+  
+  # get the transitivity and centralities and add them to the respective vectors
+  global_transitivity <- c(global_transitivity, 
+                           transitivity(battles_simulated, type = 'global'))
+  max_in_degree <- c(max_in_degree, max(degree(battles_simulated,
+                                               mode = 'in')))
+  max_out_degree <- c(max_out_degree, max(degree(battles_simulated,
+                                                 mode = 'out')))
+  max_total_degree <- c(max_total_degree, max(degree(battles_simulated),
+                                              na.rm = TRUE))
+  max_betweenness <- c(max_betweenness, max(betweenness(battles_simulated)))
+  max_pagerank <- c(max_pagerank, 
+                    max(page_rank(battles_simulated,
+                                  directed = TRUE)$vector))
+  
+}
+```
+
+
+```{r echo=FALSE}
+##### 7.2 Network Characteristics #####
+
+network_characteristics <- data.frame(
+  transitivity = transitivity(battles_igraph, type = 'global'),
+  in_degree = max(degree(battles_igraph, mode = 'in')),
+  out_degree = max(degree(battles_igraph, mode = 'out')),
+  total_degree = max(degree(battles_igraph, mode = 'total')),
+  betweenness = max(betweenness(battles_igraph)),
+  pagerank = max(page_rank(battles_igraph,
+                            directed = TRUE)$vector)
+  
+)
+network_characteristics
+```
+
+The global transitivity is much lower than in the simulations. This suggests that in the battles network, there is a low connection amongst neighbors. This makes a lot of sense, since there are allies and enemies which are connected, but the allies will not battle against each other. Furthermore, some countries like the USA, Great Britain and others have connections all over the world, because they fought wars in the Americas, Europe, Middle East and Asia. This will also lead to lower clustering.
+
+The histogram is the distribution of the 1000 simulations, the red vertical line is the value of our real network.
+
+```{r echo=FALSE}
+
+##### 7.3 Network Global Transitivity Plot #####
+
+plot <- ggplot(as.data.frame(global_transitivity), aes(x = global_transitivity)) 
+plot <- plot + geom_histogram(binwidth = 0.02) 
+plot <- plot + labs(title = 'Simulation: Global Transitivity', 
+                    subtitle = '(1000 simulations)', 
+                    x = 'Mean Transitivity') 
+plot <- plot + geom_vline(xintercept = network_characteristics$transitivity, 
+                          color = 'red')
+print(plot)
+```
+
+The maximum degree centrality is significantly higher than in the simulation. This shows that there is a few actors which can be considered outliers in comparison to the small world model. This is an accurate reflection of the real world, where not all countries are equally important. A few big players, like the US, Germany, Great Britain and France have much more influence in the world and are therefore historically involved in more wars.
+
+```{r echo=FALSE}
+##### 7.4 Max Total Degree Plot #####
+
+plot <- ggplot(as.data.frame(max_total_degree), aes(x = max_total_degree)) 
+plot <- plot + geom_histogram(binwidth = 1) 
+plot <- plot + labs(title = 'Simulation: Degree Centrality', 
+                    subtitle = '(1000 simulations)', 
+                    x = 'Maximum Degree Centrality') 
+plot <- plot + geom_vline(xintercept = network_characteristics$out_degree, 
+                          color = 'red')
+print(plot)
+```
+
+The maximum betweenness centrality is much higher for the real data than for the simulation. Even in the real data, Great Britain is a large outlier because at some point they have colonized a large part of the world.
+
+```{r echo=FALSE}
+##### 7.5 Max Betweeness Plot #####
+
+plot <- ggplot(as.data.frame(max_betweenness), aes(x = max_betweenness)) 
+plot <- plot + geom_histogram(binwidth = 1) 
+plot <- plot + labs(title = 'Simulation: Betweenness Centrality', 
+                    subtitle = '(1000 simulations)', 
+                    x = 'Maximum Betweenness Centrality') 
+plot <- plot + geom_vline(xintercept = network_characteristics$betweenness, 
+                          color = 'red')
+print(plot)
+```
+
+In the small world model, every node has a similar importance, which explains the very low page rank centrality compared to the real network. The explanation here is similar to the one for degree centrality, which is that there are a few big players shaping the geopolitical situation of the world. 
+
+```{r echo=FALSE}
+
+##### 7.6 Max PageRank simulation ####
+
+plot <- ggplot(as.data.frame(max_pagerank), aes(x = max_pagerank)) 
+plot <- plot + geom_histogram(binwidth = 0.01) 
+plot <- plot + labs(title = 'Simulation: Pagerank Centrality', 
+                    subtitle = '(1000 simulations)', 
+                    x = 'Maximum Pagerank Centrality') 
+plot <- plot + geom_vline(xintercept = network_characteristics$pagerank, 
+                          color = 'red')
+print(plot)
+```
+
